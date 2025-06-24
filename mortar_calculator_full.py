@@ -4,57 +4,28 @@ from PIL import Image, ImageTk
 import math
 import os
 import re
+import csv
 
-# === FULL BALLISTIC TABLE (HARDCODED FROM HE_BallsticTable.txt) ===
-ballistic_table = [
-    # 0 Charges
-    (0, 50, 1455, 15.0), (0, 100, 1411, 15.0), (0, 150, 1365, 14.9), (0, 200, 1318, 14.8),
-    (0, 250, 1268, 14.6), (0, 300, 1217, 14.4), (0, 350, 1159, 14.1), (0, 400, 1095, 13.7),
-    (0, 450, 1023, 13.2), (0, 500, 922, 12.4),
-    # 1 Charges
-    (1, 100, 1446, 19.5), (1, 200, 1392, 19.4), (1, 300, 1335, 19.2), (1, 400, 1275, 18.9),
-    (1, 500, 1212, 18.6), (1, 600, 1141, 18.1), (1, 700, 1058, 17.4), (1, 800, 952, 16.4),
-    # 2 Charges
-    (2, 200, 1432, 24.8), (2, 300, 1397, 24.7), (2, 400, 1362, 24.6), (2, 500, 1325, 24.4),
-    (2, 600, 1288, 24.2), (2, 700, 1248, 24.0), (2, 800, 1207, 23.7), (2, 900, 1162, 23.3),
-    (2, 1000, 1114, 22.9), (2, 1100, 1060, 22.3), (2, 1200, 997, 21.5), (2, 1300, 914, 20.4),
-    (2, 1400, 755, 17.8),
-    # 3 Charges
-    (3, 300, 1423, 28.9), (3, 400, 1397, 28.8), (3, 500, 1370, 28.6), (3, 600, 1343, 28.5),
-    (3, 700, 1315, 28.5), (3, 800, 1286, 28.3), (3, 900, 1257, 28.1), (3, 1000, 1226, 27.9),
-    (3, 1100, 1193, 27.6), (3, 1200, 1159, 27.2), (3, 1300, 1123, 26.8), (3, 1400, 1084, 26.4),
-    (3, 1500, 1040, 25.8), (3, 1600, 991, 25.1), (3, 1700, 932, 24.2), (3, 1800, 851, 22.8),
-    # 4 Charges
-    (4, 400, 1418, 32.9), (4, 500, 1398, 32.9), (4, 600, 1376, 32.8), (4, 700, 1355, 32.7),
-    (4, 800, 1333, 32.6), (4, 900, 1311, 32.4), (4, 1000, 1288, 32.2), (4, 1100, 1264, 32.1),
-    (4, 1200, 1240, 31.8), (4, 1300, 1215, 31.6), (4, 1400, 1189, 31.3), (4, 1500, 1161, 31.0),
-    (4, 1600, 1133, 30.7), (4, 1700, 1102, 30.3), (4, 1800, 1069, 29.8), (4, 1900, 1034, 29.3),
-    (4, 2000, 995, 28.7), (4, 2100, 950, 27.9), (4, 2200, 896, 26.9), (4, 2300, 820, 25.3),
-]
+# === Load Ballistic Table from CSV ===
+def load_ballistic_table_from_csv(csv_path):
+    table = []
+    with open(csv_path, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            # Parse numeric fields
+            try:
+                row['Charge Rings'] = int(row['Charge Rings'])
+                row['Range (m)'] = int(row['Range (m)'])
+                row['Elevation (mil)'] = float(row['Elevation (mil)'])
+                row['Time of Flight (sec)'] = float(row['Time of Flight (sec)'])
+                row['Dispersion Radius (m)'] = float(row['Dispersion Radius (m)'])
+            except Exception:
+                continue
+            table.append(row)
+    return table
 
 # Dispersion radius per ring (meters)
 dispersion_radius = {0: 8, 1: 13, 2: 19, 3: 27, 4: 34}
-
-# Organize ballistic data by ring
-ring_data = {}
-for ring, dist, elev, tof in ballistic_table:
-    ring_data.setdefault(ring, []).append({
-        "RANGE (M)": dist,
-        "ELEV (MIL)": elev,
-        "TIME OF FLIGHT (SEC)": tof
-    })
-
-def interpolate_ballistics(ring, distance_m):
-    """Interpolate elevation and TOF for a given ring and distance."""
-    data = ring_data[ring]
-    for i in range(len(data) - 1):
-        a, b = data[i], data[i + 1]
-        if a["RANGE (M)"] <= distance_m <= b["RANGE (M)"]:
-            ratio = (distance_m - a["RANGE (M)"]) / (b["RANGE (M)"] - a["RANGE (M)"])
-            elev = a["ELEV (MIL)"] + ratio * (b["ELEV (MIL)"] - a["ELEV (MIL)"])
-            tof = a["TIME OF FLIGHT (SEC)"] + ratio * (b["TIME OF FLIGHT (SEC)"] - a["TIME OF FLIGHT (SEC)"])
-            return elev, tof
-    return None, None
 
 class MortarApp:
     def __init__(self, root):
@@ -71,7 +42,55 @@ class MortarApp:
         self.original_img = None
         self.tk_img = None
         self.layer_entities = []
+        # Ballistics tables for both Russian and NATO
+        self.ballistic_tables = {'Russian': [], 'NATO': []}
+        self.ring_data = {'Russian': {}, 'NATO': {}}
+        self.shell_types = {'Russian': [], 'NATO': []}
+        self.selected_shell_type = tk.StringVar()
+        self.selected_table = tk.StringVar(value='Russian')
+        self.load_all_ballistics()
         self._build_gui()
+
+    def load_all_ballistics(self):
+        # Load Russian table
+        ru_path = os.path.join(os.path.dirname(__file__), 'rutable.csv')
+        nato_path = os.path.join(os.path.dirname(__file__), 'natotable.csv')
+        if os.path.exists(ru_path):
+            self.ballistic_tables['Russian'] = load_ballistic_table_from_csv(ru_path)
+            self.ring_data['Russian'] = {}
+            shell_types = set()
+            for row in self.ballistic_tables['Russian']:
+                shell = row['Shell Type']
+                ring = row['Charge Rings']
+                shell_types.add(shell)
+                self.ring_data['Russian'].setdefault(shell, {})
+                self.ring_data['Russian'][shell].setdefault(ring, []).append(row)
+            self.shell_types['Russian'] = sorted(shell_types)
+        if os.path.exists(nato_path):
+            self.ballistic_tables['NATO'] = load_ballistic_table_from_csv(nato_path)
+            self.ring_data['NATO'] = {}
+            shell_types = set()
+            for row in self.ballistic_tables['NATO']:
+                shell = row['Shell Type']
+                ring = row['Charge Rings']
+                shell_types.add(shell)
+                self.ring_data['NATO'].setdefault(shell, {})
+                self.ring_data['NATO'][shell].setdefault(ring, []).append(row)
+            self.shell_types['NATO'] = sorted(shell_types)
+        # Set default shell type
+        if self.shell_types['Russian']:
+            self.selected_shell_type.set(self.shell_types['Russian'][0])
+
+    def get_current_table(self):
+        return self.selected_table.get() if self.selected_table.get() in self.ballistic_tables else 'Russian'
+
+    def get_current_shell_types(self):
+        table = self.get_current_table()
+        return self.shell_types[table]
+
+    def get_current_ring_data(self):
+        table = self.get_current_table()
+        return self.ring_data[table]
 
     def _build_gui(self):
         # --- Scrollable Canvas Setup ---
@@ -92,15 +111,17 @@ class MortarApp:
         self.map_height_m = tk.IntVar(value=5120)
         self.coord_var = tk.StringVar()
 
-        self.entry_map_width = tk.Entry(self.canvas, textvariable=self.map_width_m, width=6)
-        self.entry_map_height = tk.Entry(self.canvas, textvariable=self.map_height_m, width=6)
-        self.entry_gps = tk.Entry(self.canvas, textvariable=self.coord_var, width=12)
-        self.btn_load_map = tk.Button(self.canvas, text="Load Map", command=self.load_map, width=10)
-        self.btn_load_heightmap = tk.Button(self.canvas, text="Load Heightmap", command=self.load_heightmap, width=13)
-        self.btn_set_gps = tk.Button(self.canvas, text="Set Mortar From GPS", command=self.set_mortar_from_coords, width=18)
-        self.btn_load_layer = tk.Button(self.canvas, text="Load Layer", command=self.load_layer_file, width=12)
-        self.btn_load_project = tk.Button(self.canvas, text="Load Project Folder", command=self.load_project_folder, width=20)
-        self.btn_reset = tk.Button(self.canvas, text="Reset", command=self.reset_positions, width=10)
+        button_style = {'bg': '#222', 'fg': '#0f0', 'activebackground': '#333', 'activeforeground': '#0f0', 'highlightbackground': '#222', 'highlightcolor': '#0f0', 'bd': 1, 'relief': 'raised', 'font': ("Consolas", 10, "bold")}
+        entry_style = {'bg': '#181818', 'fg': '#0f0', 'insertbackground': '#0f0', 'highlightbackground': '#222', 'highlightcolor': '#0f0', 'bd': 1, 'relief': 'sunken', 'font': ("Consolas", 10)}
+
+        self.entry_map_width = tk.Entry(self.canvas, textvariable=self.map_width_m, width=6, **entry_style)
+        self.entry_map_height = tk.Entry(self.canvas, textvariable=self.map_height_m, width=6, **entry_style)
+        self.entry_gps = tk.Entry(self.canvas, textvariable=self.coord_var, width=12, **entry_style)
+        self.btn_load_map = tk.Button(self.canvas, text="Load Map", command=self.load_map, width=10, **button_style)
+        self.btn_load_heightmap = tk.Button(self.canvas, text="Load Heightmap", command=self.load_heightmap, width=13, **button_style)
+        self.btn_set_gps = tk.Button(self.canvas, text="Set Mortar From GPS", command=self.set_mortar_from_coords, width=18, **button_style)
+        self.btn_load_project = tk.Button(self.canvas, text="Load Project Folder", command=self.load_project_folder, width=20, **button_style)
+        self.btn_reset = tk.Button(self.canvas, text="Reset", command=self.reset_positions, width=10, **button_style)
 
         self.canvas.bind("<Button-1>", self.handle_left_click)
         self.canvas.bind("<B3-Motion>", self.on_pan)
@@ -284,96 +305,6 @@ class MortarApp:
         except Exception as e:
             self.output.insert(tk.END, f"Failed to parse coords: {e}\n")
 
-    def load_layer_file(self):
-        path = filedialog.askopenfilename(filetypes=[("Layer files", "*.layer")])
-        if not path:
-            return
-        self.layer_entities = self.parse_layer_file(path)
-        self.update_view()
-
-    def parse_layer_file(self, path):
-        # Robust parser: extract and render single points (coords lines) and their names from entity blocks
-        entities = []
-        coords_re = re.compile(r'coords\s+([\-\d\.eE]+)\s+([\-\d\.eE]+)\s+([\-\d\.eE]+)')
-        entity_start_re = re.compile(r'^(\w+entity)')  # e.g., genericentity, spawnpointentity, etc.
-        prop_name_re = re.compile(r'name\s*=\s*"([^"]+)"')
-        with open(path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        debug_count = 0
-        current_entity_name = ''
-        in_entity_block = False
-        for idx, line in enumerate(lines):
-            l = line.strip()
-            # Detect start of a new entity block
-            if entity_start_re.match(l):
-                in_entity_block = True
-                current_entity_name = ''
-            # If this line has a name property, extract it (only if in entity block)
-            if in_entity_block:
-                pname = prop_name_re.search(l)
-                if pname:
-                    current_entity_name = pname.group(1).strip()
-            # If this line has coords, create a point entity
-            m = coords_re.search(l)
-            if m and in_entity_block:
-                pt = [float(m.group(1)), float(m.group(2)), float(m.group(3))]
-                if not all(abs(x) < 1e-6 for x in pt):
-                    name = current_entity_name or 'unnamed'
-                    entities.append({'type': 'point', 'coords': pt, 'name': name})
-                    if debug_count < 10:
-                        print(f"[DEBUG] Point entity parsed: {pt} name: {name}")
-                        debug_count += 1
-                # After coords, end of entity block
-                in_entity_block = False
-        print(f"[DEBUG] Parsed {len(entities)} point entities from {path}")
-        return entities
-
-    def draw_layer_entities(self):
-        # Draw all layer entities onto a transparent Pillow image and return it
-        if not hasattr(self, 'layer_entities') or not self.layer_entities or not self.original_img:
-            print("[DEBUG] No layer entities to draw.")
-            return None
-        w = int(self.map_width_px * self.display_scale)
-        h = int(self.map_height_px * self.display_scale)
-        try:
-            map_h_m = float(self.map_height_km.get()) * 1000
-        except Exception:
-            map_h_m = self.map_height_px * self.m_per_px
-        overlay_img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        from PIL import ImageDraw, ImageFont
-        draw = ImageDraw.Draw(overlay_img, 'RGBA')
-        debug_count = 0
-        drawn_count = 0
-        font = None
-        try:
-            font = ImageFont.truetype("arial.ttf", 14)
-        except Exception:
-            font = None
-        for idx, ent in enumerate(self.layer_entities[:20]):
-            print(f"[DEBUG] Raw entity {idx}: {ent}")
-        def is_zero_point(pt):
-            return all(abs(x) < 1e-6 for x in pt)
-        for ent in self.layer_entities:
-            if ent.get('type') == 'point' and ent.get('coords'):
-                pt = ent['coords']
-                if is_zero_point(pt):
-                    continue
-                x, y, z = pt
-                px = x / self.m_per_px
-                py = (map_h_m - z) / self.m_per_px
-                px_disp = px * self.display_scale
-                py_disp = py * self.display_scale
-                r = 6
-                draw.ellipse([px_disp-r, py_disp-r, px_disp+r, py_disp+r], fill=(255,255,0,255), outline=(0,0,0,255), width=2)
-                # Draw name if available
-                name = ent.get('name', '')
-                if name:
-                    draw.text((px_disp + r + 2, py_disp - r), name, fill=(255,255,255,255), font=font)
-                drawn_count += 1
-        print(f"[DEBUG] Entities drawn on overlay: {drawn_count}")
-        print(f"[DEBUG] Total entities: {len(self.layer_entities)}")
-        return overlay_img
-
     def update_view(self):
         # Only delete specific tags, not 'all', to preserve overlays and grid
         self.canvas.delete("marker")
@@ -393,11 +324,21 @@ class MortarApp:
                 overlay_img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(overlay_img)
                 mx, my = int(self.mortar[0] * self.display_scale), int(self.mortar[1] * self.display_scale)
-                # Max range circle (2300m, blue)
-                r_px = int(2300 / self.m_per_px * self.display_scale)
+                # Get min/max range for current shell
+                table = self.get_current_table()
+                shell = self.selected_shell_type.get() if self.selected_shell_type.get() else (self.shell_types[table][0] if self.shell_types[table] else "HE")
+                shell_rows = [row for ring_rows in self.ring_data[table].get(shell, {}).values() for row in ring_rows]
+                if shell_rows:
+                    min_range = min(row["Range (m)"] for row in shell_rows)
+                    max_range = max(row["Range (m)"] for row in shell_rows)
+                else:
+                    min_range = 748
+                    max_range = 2300
+                # Max range circle (blue)
+                r_px = int(max_range / self.m_per_px * self.display_scale)
                 draw.ellipse([mx - r_px, my - r_px, mx + r_px, my + r_px], fill=(0, 0, 255, int(255 * 0.15)))
-                # Min range circle (748m, red/orange)
-                min_r_px = int(748 / self.m_per_px * self.display_scale)
+                # Min range circle (red/orange)
+                min_r_px = int(min_range / self.m_per_px * self.display_scale)
                 draw.ellipse([mx - min_r_px, my - min_r_px, mx + min_r_px, my + min_r_px], fill=(255, 128, 0, int(255 * 0.15)))
                 # Dispersion circle at target (if available)
                 if self.mortar and self.target:
@@ -409,19 +350,18 @@ class MortarApp:
                     dz = target_z - mortar_z
                     dz_correction_factor = 1.5
                     ring, entry = self.get_best_ring(dist_m, dz, dz_correction_factor)
-                    if ring is not None and self.target:
-                        disp_m = dispersion_radius.get(ring, 0)
+                    if ring is not None and self.target and entry is not None:
+                        a, b = entry
+                        ratio = (dist_m - a["Range (m)"]) / (b["Range (m)"] - a["Range (m)"])
+                        disp_a = a["Dispersion Radius (m)"]
+                        disp_b = b["Dispersion Radius (m)"]
+                        disp_m = disp_a + ratio * (disp_b - disp_a)
                         tx, ty = int(self.target[0] * self.display_scale), int(self.target[1] * self.display_scale)
                         disp_px = int(disp_m / self.m_per_px * self.display_scale)
                         draw.ellipse([tx - disp_px, ty - disp_px, tx + disp_px, ty + disp_px], fill=(255,255,255,60))
                 # Composite overlay onto map
                 display_img = display_img.convert("RGBA")
                 display_img = Image.alpha_composite(display_img, overlay_img)
-            # Draw layer entities overlay (composite onto display_img)
-            layer_overlay = self.draw_layer_entities()
-            if layer_overlay is not None:
-                display_img = display_img.convert("RGBA")
-                display_img = Image.alpha_composite(display_img, layer_overlay)
             self.tk_img = ImageTk.PhotoImage(display_img)
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_img)
             self.canvas.config(scrollregion=(0, 0, w, h))
@@ -444,9 +384,25 @@ class MortarApp:
 
     def draw_input_options(self):
         self.canvas.delete("inputbox")
-        # Dynamically size the input box to fit widgets
         widgets = [self.entry_map_width, self.entry_map_height, self.entry_gps,
-                   self.btn_load_map, self.btn_load_heightmap, self.btn_set_gps, self.btn_load_layer, self.btn_load_project, self.btn_reset]
+                   self.btn_load_map, self.btn_load_heightmap, self.btn_set_gps, self.btn_load_project, self.btn_reset]
+        # Add table (faction) dropdown
+        if not hasattr(self, 'table_dropdown'):
+            self.table_dropdown = tk.OptionMenu(self.canvas, self.selected_table, 'Russian', 'NATO', command=self.on_table_change)
+            self.table_dropdown.config(bg='#222', fg='#0f0', activebackground='#333', activeforeground='#0f0', highlightbackground='#222', highlightcolor='#0f0', bd=1, relief='raised', font=("Consolas", 10, "bold"))
+        widgets.append(self.table_dropdown)
+        # Add shell type dropdown
+        shell_types = self.get_current_shell_types()
+        if shell_types:
+            if not hasattr(self, 'shell_dropdown'):
+                self.shell_dropdown = tk.OptionMenu(self.canvas, self.selected_shell_type, *shell_types, command=lambda _: self.update_view())
+                self.shell_dropdown.config(bg='#222', fg='#0f0', activebackground='#333', activeforeground='#0f0', highlightbackground='#222', highlightcolor='#0f0', bd=1, relief='raised', font=("Consolas", 10, "bold"))
+            else:
+                menu = self.shell_dropdown['menu']
+                menu.delete(0, 'end')
+                for s in shell_types:
+                    menu.add_command(label=s, command=tk._setit(self.selected_shell_type, s, lambda _: self.update_view()))
+            widgets.append(self.shell_dropdown)
         self.root.update_idletasks()
         max_w = 0
         total_h = 20
@@ -455,25 +411,43 @@ class MortarApp:
             h = wdg.winfo_reqheight()
             if w > max_w:
                 max_w = w
-            total_h += h + 5
+            total_h += h + 10  # Add more vertical padding
         box_w = max(320, max_w + 200)
         box_h = max(120, total_h)
-        # Anchor to top-left of window (not affected by pan/zoom)
         box_x = 10
         box_y = 10
         self.canvas.create_rectangle(box_x, box_y, box_x+box_w, box_y+box_h, fill="#222", outline="#fff", tags="inputbox")
-        self.canvas.create_text(box_x+10, box_y+10, anchor="nw", text="Map Width (m):", fill="white", font=("Consolas", 10), tags="inputbox")
-        self.canvas.create_window(box_x+110, box_y+10, anchor="nw", window=self.entry_map_width, tags="inputbox")
-        self.canvas.create_text(box_x+10, box_y+35, anchor="nw", text="Map Height (m):", fill="white", font=("Consolas", 10), tags="inputbox")
-        self.canvas.create_window(box_x+110, box_y+35, anchor="nw", window=self.entry_map_height, tags="inputbox")
+        y_offset = box_y + 10
+        self.canvas.create_text(box_x+10, y_offset, anchor="nw", text="Map Width (m):", fill="white", font=("Consolas", 10), tags="inputbox")
+        self.canvas.create_window(box_x+110, y_offset, anchor="nw", window=self.entry_map_width, tags="inputbox")
+        y_offset += self.entry_map_width.winfo_reqheight() + 10
+        self.canvas.create_text(box_x+10, y_offset, anchor="nw", text="Map Height (m):", fill="white", font=("Consolas", 10), tags="inputbox")
+        self.canvas.create_window(box_x+110, y_offset, anchor="nw", window=self.entry_map_height, tags="inputbox")
+        y_offset += self.entry_map_height.winfo_reqheight() + 10
         self.canvas.create_window(box_x+190, box_y+10, anchor="nw", window=self.btn_load_map, tags="inputbox")
-        self.canvas.create_window(box_x+190, box_y+35, anchor="nw", window=self.btn_load_heightmap, tags="inputbox")
-        self.canvas.create_text(box_x+10, box_y+60, anchor="nw", text="GPS Coords:", fill="white", font=("Consolas", 10), tags="inputbox")
-        self.canvas.create_window(box_x+110, box_y+60, anchor="nw", window=self.entry_gps, tags="inputbox")
-        self.canvas.create_window(box_x+190, box_y+60, anchor="nw", window=self.btn_set_gps, tags="inputbox")
-        self.canvas.create_window(box_x+190, box_y+85, anchor="nw", window=self.btn_load_layer, tags="inputbox")
-        self.canvas.create_window(box_x+10, box_y+110, anchor="nw", window=self.btn_load_project, tags="inputbox")
-        self.canvas.create_window(box_x+120, box_y+110, anchor="nw", window=self.btn_reset, tags="inputbox")
+        self.canvas.create_window(box_x+190, y_offset, anchor="nw", window=self.btn_load_heightmap, tags="inputbox")
+        y_offset += self.btn_load_heightmap.winfo_reqheight() + 10
+        self.canvas.create_text(box_x+10, y_offset, anchor="nw", text="GPS Coords:", fill="white", font=("Consolas", 10), tags="inputbox")
+        self.canvas.create_window(box_x+110, y_offset, anchor="nw", window=self.entry_gps, tags="inputbox")
+        self.canvas.create_window(box_x+190, y_offset, anchor="nw", window=self.btn_set_gps, tags="inputbox")
+        y_offset += self.entry_gps.winfo_reqheight() + 10
+        self.canvas.create_window(box_x+190, y_offset, anchor="nw", window=self.btn_load_project, tags="inputbox")
+        y_offset += self.btn_load_project.winfo_reqheight() + 10
+        self.canvas.create_window(box_x+10, y_offset, anchor="nw", window=self.btn_reset, tags="inputbox")
+        y_offset += self.btn_reset.winfo_reqheight() + 10
+        self.canvas.create_text(box_x+10, y_offset, anchor="nw", text="Faction:", fill="white", font=("Consolas", 10), tags="inputbox")
+        self.canvas.create_window(box_x+110, y_offset, anchor="nw", window=self.table_dropdown, tags="inputbox")
+        y_offset += self.table_dropdown.winfo_reqheight() + 10
+        if shell_types:
+            self.canvas.create_text(box_x+10, y_offset, anchor="nw", text="Shell Type:", fill="white", font=("Consolas", 10), tags="inputbox")
+            self.canvas.create_window(box_x+110, y_offset, anchor="nw", window=self.shell_dropdown, tags="inputbox")
+
+    def on_table_change(self, *_):
+        # Update shell dropdown when table/faction changes
+        shell_types = self.get_current_shell_types()
+        if shell_types:
+            self.selected_shell_type.set(shell_types[0])
+        self.update_view()
 
     def calculate(self):
         if not (self.mortar and self.target):
@@ -481,22 +455,36 @@ class MortarApp:
         dx_m = (self.target[0] - self.mortar[0]) * self.m_per_px
         dy_m = (self.target[1] - self.mortar[1]) * self.m_per_px
         dist_m = math.hypot(dx_m, dy_m)
-        # Use 6000 mils for azimuth (Russian/Arma standard)
+        table = self.get_current_table()
+        mils_per_circle = 6400 if table == 'NATO' else 6000
         azimuth_deg = (math.degrees(math.atan2(dx_m, -dy_m)) + 360) % 360
-        azimuth_mil = (azimuth_deg / 360) * 6000
+        azimuth_mil = (azimuth_deg / 360) * mils_per_circle
         mortar_z = self.get_elevation(*self.mortar)
         target_z = self.get_elevation(*self.target)
         dz = target_z - mortar_z
-        dz_correction_factor = 1.5  # mils per meter
+        dz_correction_factor = 1.5
         ring, entry = self.get_best_ring(dist_m, dz, dz_correction_factor)
+        shell = self.selected_shell_type.get() if self.selected_shell_type.get() else (self.get_current_shell_types()[0] if self.get_current_shell_types() else "HE")
+        shell_rows = [row for ring_rows in self.get_current_ring_data().get(shell, {}).values() for row in ring_rows]
+        if shell_rows:
+            min_range = min(row["Range (m)"] for row in shell_rows)
+            max_range = max(row["Range (m)"] for row in shell_rows)
+            min_elev = min(row["Elevation (mil)"] for row in shell_rows)
+        else:
+            min_range = 748
+            max_range = 2300
+            min_elev = 748
         if ring is None or entry is None:
-            calc_text = f"No valid firing solution found above 748 mils.\nMax table range: 2300m."
+            calc_text = f"No valid firing solution found above {min_elev:.0f} mils.\nMax table range: {max_range:.0f}m."
         else:
             a, b = entry
-            ratio = (dist_m - a["RANGE (M)"]) / (b["RANGE (M)"] - a["RANGE (M)"])
-            elev = a["ELEV (MIL)"] + ratio * (b["ELEV (MIL)"] - a["ELEV (MIL)"])
-            tof = a["TIME OF FLIGHT (SEC)"] + ratio * (b["TIME OF FLIGHT (SEC)"] - a["TIME OF FLIGHT (SEC)"])
+            ratio = (dist_m - a["Range (m)"]) / (b["Range (m)"] - a["Range (m)"])
+            elev = a["Elevation (mil)"] + ratio * (b["Elevation (mil)"] - a["Elevation (mil)"])
+            tof = a["Time of Flight (sec)"] + ratio * (b["Time of Flight (sec)"] - a["Time of Flight (sec)"])
             corrected_elev = elev + dz * dz_correction_factor
+            disp_a = a["Dispersion Radius (m)"]
+            disp_b = b["Dispersion Radius (m)"]
+            disp_m = disp_a + ratio * (disp_b - disp_a)
             if corrected_elev < 100 or corrected_elev > 1600:
                 calc_text = (
                     f"Elevation out of range: {corrected_elev:.0f} mils\n"
@@ -505,11 +493,14 @@ class MortarApp:
                 )
             else:
                 calc_text = (
+                    f"FACTION: {table}\n"
+                    f"SHELL: {shell}\n"
                     f"RANGE (M): {dist_m:.0f}\n"
                     f"AZIMUTH: {azimuth_mil:.0f} mils\n"
                     f"CHARGE RING: {ring}\n"
                     f"ELEV (MIL): {corrected_elev:.0f}\n"
                     f"TIME OF FLIGHT (SEC): {tof:.2f}\n"
+                    f"Dispersion Radius: {disp_m:.1f} m\n"
                     f"Mortar Elevation: {mortar_z:.1f} m\n"
                     f"Target Elevation: {target_z:.1f} m\n"
                     f"Elevation Delta: {dz:.1f} m\n"
@@ -547,16 +538,16 @@ class MortarApp:
         return 0.0
 
     def get_best_ring(self, dist_m, dz, dz_correction_factor=1.5):
-        # Find the best charge ring and ballistic table entry for the given range and elevation delta
+        table = self.get_current_table()
+        shell = self.selected_shell_type.get() if self.selected_shell_type.get() else (self.shell_types[table][0] if self.shell_types[table] else "HE")
         best_ring = None
         best_entry = None
-        for ring, data in ring_data.items():
+        for ring, data in self.ring_data[table].get(shell, {}).items():
             for i in range(len(data) - 1):
                 a, b = data[i], data[i + 1]
-                if a["RANGE (M)"] <= dist_m <= b["RANGE (M)"]:
-                    # Interpolate elevation
-                    ratio = (dist_m - a["RANGE (M)"]) / (b["RANGE (M)"] - a["RANGE (M)"])
-                    elev = a["ELEV (MIL)"] + ratio * (b["ELEV (MIL)"] - a["ELEV (MIL)"])
+                if a["Range (m)"] <= dist_m <= b["Range (m)"]:
+                    ratio = (dist_m - a["Range (m)"]) / (b["Range (m)"] - a["Range (m)"])
+                    elev = a["Elevation (mil)"] + ratio * (b["Elevation (mil)"] - a["Elevation (mil)"])
                     corrected_elev = elev + dz * dz_correction_factor
                     # Only accept solutions above 748 mils (min range)
                     if corrected_elev >= 748:
@@ -596,12 +587,6 @@ class MortarApp:
         if os.path.exists(heightmap_path):
             img = Image.open(heightmap_path).convert("L")
             self.heightmap_image = img
-        # Load and parse all .layer files
-        self.layer_entities = []
-        for fname in os.listdir(folder):
-            if fname.lower().endswith(".layer"):
-                layer_path = os.path.join(folder, fname)
-                self.layer_entities.extend(self.parse_layer_file(layer_path))
         self.update_view()
 
 if __name__ == "__main__":
