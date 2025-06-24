@@ -15,6 +15,9 @@ A modern, interactive mortar calculator for Arma, supporting both Russian and NA
   - Dynamically loads ballistic data from external CSVs (`rutable.csv` for Russian, `natotable.csv` for NATO).
   - User-selectable shell types and charge rings, with correct min/max range and dispersion overlays.
   - Calculates azimuth, elevation, time of flight, and dispersion radius, factoring in elevation differences.
+    
+- **GPS Coordinates For Accuracy:**
+  - You can get your MGRS coordinates from the Garmim watch, which is part of the RHS Status Quo mod. Doing so will result in better precision.
 
 - **Intuitive UI:**
   - Modern dark-themed interface with styled buttons and entries.
